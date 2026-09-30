@@ -1,101 +1,126 @@
 // The README quick start (steps 3-5), run as written against a fresh schema.
+//
+// The TypeScript blocks of steps 3 and 4 are taken from README.md verbatim
+// (only `as const` is dropped, the one piece of TypeScript syntax in them),
+// written next to this file so the package imports resolve, and imported as
+// the runtime login named by APP_DATABASE_URL. The SQL of step 5 then runs
+// statement by statement as the reader login.
 
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { after, test } from "node:test";
 
-import { createArtifactEnvelope } from "@scshafe/switchyard/contracts/artifact";
-import { createGraphDefinition, graphDefinitionRef } from "@scshafe/switchyard/graph/definition";
-import { runNextUnitTurn } from "@scshafe/switchyard/execute/unit-runner";
-import { assertSchemaCurrent, createPostgresStores } from "@scshafe/switchyard-postgres";
+import { SwitchyardPostgresConfigError, createPostgresStores } from "@scshafe/switchyard-postgres";
 
-import { closeAdmin, openScenarioDatabase } from "./support/postgres.mjs";
+import {
+  RUNTIME_LOGIN,
+  closeAdmin,
+  loginUrl,
+  openScenarioDatabase,
+  withApplicationName
+} from "./support/postgres.mjs";
 
 after(closeAdmin);
 
-test("README quick start: draft, human review, publish, inspect", async () => {
+const README = new URL("../README.md", import.meta.url);
+
+function section(markdown, heading) {
+  const start = markdown.indexOf(`\n${heading}\n`);
+  assert.notEqual(start, -1, `README has no "${heading}"`);
+  const rest = markdown.slice(start + heading.length + 2);
+  const end = rest.search(/\n#{2,3} /);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+function firstBlock(text, language) {
+  const match = new RegExp("```" + language + "\\n([\\s\\S]*?)```").exec(text);
+  assert.ok(match, `no ${language} block`);
+  return match[1];
+}
+
+async function quickStart() {
+  const markdown = await readFile(README, "utf8");
+  const step3 = firstBlock(section(markdown, "### 3. Wire the stores into switchyard"), "ts");
+  const step4 = firstBlock(section(markdown, "### 4. Record a person's answer"), "ts");
+  const step5 = firstBlock(section(markdown, "### 5. Watch a unit move"), "sql");
+  const program = `${step3}\n${step4}`.replaceAll(" as const", "");
+  assert.doesNotMatch(program, /\bimport pg\b/, "the quick start needs no direct pg import");
+  const statements = step5.split(";").map((statement) => statement.trim()).filter(Boolean);
+  return { program, statements };
+}
+
+test("README quick start: draft, a person's answer, publish, inspect through the views", async () => {
   const database = await openScenarioDatabase("readme");
+  const { program, statements } = await quickStart();
+  const file = new URL(`./.readme-quickstart-${process.pid}-${randomBytes(4).toString("hex")}.mjs`, import.meta.url);
   try {
-    const pool = database.runtimePool;
-    await assertSchemaCurrent({ pool: database.ownerPool });
-    const { graphStore, unitStore, humanDecisions } = createPostgresStores({ pool });
+    process.env.APP_DATABASE_URL = withApplicationName(loginUrl(database.name, RUNTIME_LOGIN), "readme-app");
+    await writeFile(file, program);
+    await import(file.href);
 
-    const turn = {
-      idempotency: "per (unitId, nodeId, attemptNumber)",
-      leaseMs: 30_000,
-      maxAttempts: 3,
-      retryTaxonomy: "retryable vs terminal, as v1 durable-stage"
-    };
-    const graph = createGraphDefinition({
-      graphId: "answers",
-      version: 1,
-      description: "Draft an answer, have a person review it, publish it.",
-      entry: "draft",
-      nodes: [
-        { nodeId: "draft", ref: { id: "answers.draft", version: 1 }, kind: "code",
-          input: "question.v1", outcomes: { version: 1, outcomes: ["drafted"] },
-          principal: { id: "worker" }, turn },
-        { nodeId: "review", ref: { id: "answers.review", version: 1 }, kind: "human",
-          input: "question.v1", outcomes: { version: 1, outcomes: ["approved", "rejected"] },
-          principal: { id: "reviewer" }, turn },
-        { nodeId: "publish", ref: { id: "answers.publish", version: 1 }, kind: "code",
-          input: "question.v1", outcomes: { version: 1, outcomes: ["published"] },
-          principal: { id: "worker" }, turn }
-      ],
-      edges: [
-        { edgeId: "draft-review", from: "draft", when: { outcome: "drafted" }, to: ["review"] },
-        { edgeId: "review-publish", from: "review", when: { outcome: "approved" }, to: ["publish"] }
-      ],
-      terminals: [
-        { nodeId: "review", outcome: "rejected" },
-        { nodeId: "publish", outcome: "published" }
-      ]
-    });
-
-    await graphStore.publishGraph(graph);
-    await graphStore.publishGraph(graph);
-    await unitStore.admitUnit({
-      unitId: "question-42",
-      graph: graphDefinitionRef(graph),
-      seedArtifact: createArtifactEnvelope("question.v1", { text: "What is a switchyard?" }),
-      admittedAt: new Date().toISOString(),
-      principalId: "admitter"
-    });
-    const drafted = await runNextUnitTurn({
-      store: unitStore,
-      principalId: "worker",
-      leaseOwner: "worker-1",
-      ports: { code: { run: async () => ({ outcome: "drafted" }) } }
-    });
-    assert.equal(drafted.status, "succeeded");
-
-    const [pending] = await humanDecisions.listPending({ principalId: "reviewer" });
-    assert.deepEqual(pending.inputArtifact.payload, { text: "What is a switchyard?" });
-    await humanDecisions.record({ queueId: pending.queueId, outcome: "approved", actorId: "alice" });
-    const decisions = await humanDecisions.listDecisions({ unitId: "question-42" });
-    assert.deepEqual(decisions.map((decision) => [decision.nodeId, decision.outcome, decision.actorId]), [
-      ["review", "approved", "alice"]
+    const results = [];
+    for (const statement of statements) {
+      results.push((await database.readerPool.query(statement)).rows);
+    }
+    const [status, positions, outputs, turns, pending, decisions] = results;
+    assert.equal(results.length, 6);
+    assert.deepEqual(status, [
+      { status: "completed", final_node_id: "publish", final_outcome: "published", final_contract_id: "answer.v1" }
     ]);
-
-    const published = await runNextUnitTurn({
-      store: unitStore,
-      principalId: "worker",
-      leaseOwner: "worker-1",
-      ports: { code: { run: async () => ({ outcome: "published" }) } }
-    });
-    assert.equal(published.status, "succeeded");
-    // Nothing is left for the worker; an idle poll skips the serialized claim.
-    assert.equal(await unitStore.hasClaimableWorkerTurns("worker"), false);
-
-    const watched = await database.readerPool.query(`
-      SELECT node_id, status, outcome, actor_id, attempts::int AS attempts
-      FROM switchyard.turns WHERE unit_id = 'question-42' ORDER BY enqueue_sequence
-    `);
-    assert.deepEqual(watched.rows, [
+    assert.deepEqual(positions, []);
+    assert.deepEqual(outputs, [
+      { node_id: "draft", outcome: "drafted", contract_id: "answer.v1", payload: { text: "A graph of stations and tracks." } }
+    ]);
+    assert.deepEqual(turns.map((row) => ({ ...row, attempts: Number(row.attempts) })), [
       { node_id: "draft", status: "settled", outcome: "drafted", actor_id: null, attempts: 1 },
       { node_id: "review", status: "settled", outcome: "approved", actor_id: "alice", attempts: 1 },
       { node_id: "publish", status: "settled", outcome: "published", actor_id: null, attempts: 1 }
     ]);
-    assert.equal((await database.readerPool.query("SELECT * FROM switchyard.pending_human_turns")).rows.length, 0);
+    assert.deepEqual(pending, []);
+    assert.deepEqual(decisions.map((row) => [row.unit_id, row.node_id, row.outcome, row.actor_id]), [
+      ["question-42", "review", "approved", "alice"]
+    ]);
+  } finally {
+    delete process.env.APP_DATABASE_URL;
+    await rm(file, { force: true });
+    await database.close();
+  }
+});
+
+test("createPostgresStores takes a pool or a connectionString, and closes only its own pool", async () => {
+  assert.throws(() => createPostgresStores({}), SwitchyardPostgresConfigError);
+  assert.throws(() => createPostgresStores({ connectionString: " " }), SwitchyardPostgresConfigError);
+  assert.throws(
+    () => createPostgresStores({ connectionString: "postgres://unused", maxConnections: 0 }),
+    /maxConnections/
+  );
+  const database = await openScenarioDatabase("readme");
+  try {
+    assert.throws(
+      () => createPostgresStores({ pool: database.runtimePool, connectionString: "postgres://unused" }),
+      /not both/
+    );
+    assert.throws(
+      () => createPostgresStores({ pool: database.runtimePool, maxConnections: 2 }),
+      /only with a connectionString/
+    );
+    const borrowed = createPostgresStores({ pool: database.runtimePool });
+    assert.equal(borrowed.pool, database.runtimePool);
+    await borrowed.close();
+    assert.equal((await database.runtimePool.query("SELECT 1 AS one")).rows[0].one, 1);
+
+    const errors = [];
+    const owned = createPostgresStores({
+      connectionString: withApplicationName(loginUrl(database.name, RUNTIME_LOGIN), "owned"),
+      maxConnections: 2,
+      onPoolError: (error) => errors.push(error)
+    });
+    assert.deepEqual(await owned.humanDecisions.listPending(), []);
+    assert.equal(await owned.unitStore.hasClaimableWorkerTurns("worker"), false);
+    await Promise.all([owned.close(), owned.close()]);
+    await assert.rejects(owned.humanDecisions.listPending(), /Cannot use a pool after calling end/);
+    assert.deepEqual(errors, []);
   } finally {
     await database.close();
   }
