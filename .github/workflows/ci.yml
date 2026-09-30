@@ -1,0 +1,69 @@
+name: CI
+
+# Tags are owned by publish.yml; `branches` keeps tag pushes out of CI.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        # The endpoints of package.json engines.node.
+        node-version: [22.22.0, 24.18.0]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Installs @scshafe/* (the switchyard peer) from GitHub Packages. The
+      # @scshafe/switchyard package must grant this repository read access
+      # ("Manage Actions access"), or the install fails with 403.
+      packages: read
+    services:
+      postgres:
+        # postgres:18.6, the platform's major, pinned by digest.
+        image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      # scripts/test-postgres.mjs uses this server instead of starting Docker.
+      SWITCHYARD_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # pnpm/action-setup v6.1.0; the version comes from package.json packageManager.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      # actions/setup-node v7.0.0. registry-url + scope write a user-level
+      # npmrc ($RUNNER_TEMP) that maps @scshafe and reads NODE_AUTH_TOKEN.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: "@scshafe"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run verify
+      - name: Fresh-clone check (install, build and verify a clone of HEAD)
+        run: pnpm run test:fresh-clone
+      # LIB-12e / D-17: no dependency-review action on a Free-plan private
+      # repository; report production advisories without failing the build.
+      - name: Audit production dependencies (non-blocking)
+        continue-on-error: true
+        run: pnpm audit --prod

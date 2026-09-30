@@ -1,0 +1,277 @@
+name: Publish
+
+# LIB-07. A release is an annotated tag v<x.y.z> on a commit on main whose
+# package.json version is <x.y.z>. This workflow is the only publisher.
+# workflow_dispatch exists only for the dry run (no prereleases in v1, D-07):
+# it runs every check and stops at `pnpm publish --dry-run`.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Stop at pnpm publish --dry-run (v1 publishes only from tags; false is refused)"
+        type: boolean
+        required: true
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: https://npm.pkg.github.com
+  # scripts/test-postgres.mjs uses the job's service container.
+  SWITCHYARD_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+
+jobs:
+  publish:
+    name: Verify and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    services:
+      postgres:
+        # postgres:18.6, the platform's major, pinned by digest (as ci.yml).
+        image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      commit: ${{ steps.identity.outputs.commit }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+    steps:
+      - name: Refuse a non-dry-run dispatch
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        run: |
+          echo "::error::v1 publishes only from a v<x.y.z> tag on main; dispatch is dry-run only (D-07)."
+          exit 1
+
+      # actions/checkout v7.0.1. fetch-depth 0 fetches every branch and tag
+      # (+refs/heads/*:refs/remotes/origin/*, +refs/tags/*:refs/tags/*), so
+      # origin/main is present for the ancestry check without a second,
+      # credentialed fetch; credentials are not persisted.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check release identity (tag on main, version == tag, changelog entry)
+        id: identity
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          commit="$(git rev-parse HEAD)"
+          version="$(node -p 'require("./package.json").version')"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+            || fail "package.json version $version is not a plain x.y.z release version"
+          grep -Eq "^## ${version//./\\.} " CHANGELOG.md \
+            || fail "CHANGELOG.md has no '## $version — <date>' section"
+          git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null \
+            || fail "origin/main was not fetched"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            tag="v$version"
+            if git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+              echo "Dry run: $commit is on origin/main."
+            else
+              echo "::warning::Dry run: $commit is not on origin/main; a tag here would be refused."
+            fi
+          else
+            [[ "$GITHUB_REF" == refs/tags/v* ]] || fail "not a v* tag push: $GITHUB_REF"
+            tag="$GITHUB_REF_NAME"
+            [[ "$(git cat-file -t "refs/tags/$tag")" == "tag" ]] \
+              || fail "$tag is not an annotated tag"
+            tag_commit="$(git rev-parse "refs/tags/$tag^{commit}")"
+            [[ "$tag_commit" == "$commit" ]] \
+              || fail "checked-out $commit is not the commit $tag_commit tagged $tag"
+            git merge-base --is-ancestor "$commit" refs/remotes/origin/main \
+              || fail "$tag ($commit) is not on origin/main"
+            [[ "$tag" == "v$version" ]] \
+              || fail "tag $tag does not equal package.json version v$version"
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release identity: $tag, $commit"
+
+      - name: Refuse a vendored engine
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          ! grep -Eq '^overrides:' pnpm-workspace.yaml \
+            || fail "pnpm-workspace.yaml still overrides @scshafe/switchyard; switch to the registry version first"
+          [[ ! -e vendor ]] || fail "vendor/ must be removed before a release"
+          ! grep -Eq '(tarball|specifier|version): file:' pnpm-lock.yaml \
+            || fail "pnpm-lock.yaml resolves a dependency from a local file"
+
+      # pnpm/action-setup v6.1.0; the version comes from packageManager.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      # actions/setup-node v7.0.0. registry-url + scope write a user-level
+      # npmrc ($RUNNER_TEMP) that maps @scshafe and reads NODE_AUTH_TOKEN.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          registry-url: ${{ env.REGISTRY }}
+          scope: "@scshafe"
+
+      - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: pnpm run verify
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack and record digests
+        id: pack
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/pack"
+          mkdir -p "$dest"
+          pnpm pack --config.ignore-scripts=true --pack-destination "$dest" --json > "$RUNNER_TEMP/pack.json"
+          tgz="$dest/$(node -p 'require(process.argv[1]).filename.split("/").pop()' "$RUNNER_TEMP/pack.json")"
+          sha256="$(sha256sum "$tgz" | cut -d' ' -f1)"
+          integrity="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"
+          {
+            echo "sha256=$sha256"
+            echo "integrity=$integrity"
+          } >> "$GITHUB_OUTPUT"
+          echo "$(basename "$tgz") sha256=$sha256 $integrity"
+
+      # --no-git-checks: a tag checkout is a detached HEAD. --ignore-scripts:
+      # verify above already built and checked lib/; publishing packs that
+      # exact tree (pack-twice reproducibility is part of verify).
+      - name: Publish dry run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm publish --dry-run --no-git-checks --ignore-scripts --access restricted
+
+      - name: Publish
+        if: github.event_name == 'push'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm publish --no-git-checks --ignore-scripts --access restricted
+
+  release:
+    name: Install back, compare, release
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: read
+    env:
+      TAG: ${{ needs.publish.outputs.tag }}
+      VERSION: ${{ needs.publish.outputs.version }}
+      PUBLISHED_INTEGRITY: ${{ needs.publish.outputs.integrity }}
+      PUBLISHED_SHA256: ${{ needs.publish.outputs.sha256 }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+      # pnpm/action-setup v6.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      # actions/setup-node v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          registry-url: ${{ env.REGISTRY }}
+          scope: "@scshafe"
+
+      - name: Rebuild and pack the tag locally
+        id: local
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm run build
+          dest="$RUNNER_TEMP/local"
+          mkdir -p "$dest"
+          pnpm pack --config.ignore-scripts=true --pack-destination "$dest" --json > "$RUNNER_TEMP/local.json"
+          tgz="$dest/$(node -p 'require(process.argv[1]).filename.split("/").pop()' "$RUNNER_TEMP/local.json")"
+          sha256="$(sha256sum "$tgz" | cut -d' ' -f1)"
+          integrity="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"
+          [[ "$sha256" == "$PUBLISHED_SHA256" ]] \
+            || { echo "::error::local pack $sha256 != publish-job pack $PUBLISHED_SHA256"; exit 1; }
+          {
+            echo "tgz=$tgz"
+            echo "sha256=$sha256"
+            echo "integrity=$integrity"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install the published version into an empty consumer
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$consumer"
+          cd "$consumer"
+          printf '{\n  "private": true,\n  "type": "module"\n}\n' > package.json
+          printf '@scshafe:registry=%s\n' "$REGISTRY" > .npmrc
+          # autoInstallPeers brings the @scshafe/switchyard peer from the registry.
+          pnpm add --save-exact --ignore-scripts "@scshafe/switchyard-postgres@$VERSION"
+
+      - name: Compare registry integrity with the local pack
+        run: >-
+          node scripts/check-install-back.mjs "$RUNNER_TEMP/consumer"
+          "${{ steps.local.outputs.integrity }}" "$PUBLISHED_INTEGRITY"
+
+      - name: JS, CLI and TS smokes against the registry install
+        env:
+          SWITCHYARD_POSTGRES_SMOKE_CONSUMER: ${{ runner.temp }}/consumer
+        run: node scripts/check-pack-install.mjs
+
+      - name: Create the GitHub Release with digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TGZ: ${{ steps.local.outputs.tgz }}
+          SHA256: ${{ steps.local.outputs.sha256 }}
+          INTEGRITY: ${{ steps.local.outputs.integrity }}
+          COMMIT: ${{ needs.publish.outputs.commit }}
+        run: |
+          set -euo pipefail
+          manifest="release/scshafe-switchyard-postgres-$VERSION.payload.sha256"
+          [[ -f "$manifest" ]] || { echo "::error::missing $manifest"; exit 1; }
+          manifest_sha256="$(sha256sum "$manifest" | cut -d' ' -f1)"
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "@scshafe/switchyard-postgres $VERSION, published to GitHub Packages ($REGISTRY) from $COMMIT."
+            echo
+            echo "| Artifact | Digest |"
+            echo "| --- | --- |"
+            echo "| \`$(basename "$TGZ")\` sha256 | \`$SHA256\` |"
+            echo "| \`$(basename "$TGZ")\` integrity (registry dist.integrity) | \`$INTEGRITY\` |"
+            echo "| \`$manifest\` sha256 | \`$manifest_sha256\` |"
+            echo
+            echo "The registry tarball's integrity equals a fresh pack of this tag (install-back job)."
+            echo
+            awk -v v="$VERSION" '$0 ~ "^## " v " " {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md
+          } > "$notes"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file "$notes" \
+            "$TGZ" "$manifest"
