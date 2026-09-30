@@ -49,6 +49,12 @@ export const MIGRATIONS: readonly MigrationDescriptor[] = Object.freeze([
     name: "human_decisions_and_views",
     fileName: "003_human_decisions_and_views.sql",
     checksum: "d4cfee7bd82ff2496e00b1df43b77ecc10360a36cb40e68ee6b218da54e8337f"
+  }),
+  Object.freeze({
+    version: 4,
+    name: "status_and_unit_views",
+    fileName: "004_status_and_unit_views.sql",
+    checksum: "3afd70850ce892f4dc33a0febef37323ccba1dad2cd27fa3cece6a8f760ec1c9"
   })
 ]);
 
@@ -69,7 +75,9 @@ const RUNTIME_ROUTINES: readonly { readonly since: number; readonly signature: s
   { since: 2, signature: "has_claimable_worker_turns(text, text)" },
   { since: 3, signature: "list_pending_human_turns(text, text, text, bigint, integer)" },
   { since: 3, signature: "inspect_pending_human_turn(uuid)" },
-  { since: 3, signature: "list_human_decisions(text, bigint, integer)" }
+  { since: 3, signature: "list_human_decisions(text, bigint, integer)" },
+  { since: 4, signature: "schema_migration_status()" },
+  { since: 4, signature: "find_pending_human_turns(text, text, text, text, bigint, integer)" }
 ];
 
 const SQL_DIRECTORY = new URL("../sql/", import.meta.url);
@@ -188,27 +196,59 @@ function lockKey(schema: string): string {
   return `switchyard-postgres:migrate:${schema}`;
 }
 
+interface LedgerAccess extends Record<string, unknown> {
+  readonly present: boolean;
+  readonly readable: boolean;
+  readonly routine: boolean;
+}
+
+/**
+ * The applied-migration ledger, read the way the connected role may: the
+ * owner and the reader SELECT schema_migrations; the runtime role, which
+ * holds no relation privilege, calls schema_migration_status() (migration 4).
+ */
 async function readApplied(client: PgClient, schema: string): Promise<readonly AppliedMigration[]> {
-  const exists = await client.query<{ present: boolean }>(
-    "SELECT pg_catalog.to_regclass($1) IS NOT NULL AS present",
-    [`${quoteIdentifier(schema)}.schema_migrations`]
-  );
-  if (exists.rows[0]?.present !== true) return [];
+  const table = `${quoteIdentifier(schema)}.schema_migrations`;
+  const routine = `${quoteIdentifier(schema)}.schema_migration_status()`;
+  const access = await client.query<LedgerAccess>(`
+    SELECT
+      ledger.oid IS NOT NULL AS present,
+      COALESCE(pg_catalog.has_table_privilege(ledger.oid, 'SELECT'), false) AS readable,
+      COALESCE(pg_catalog.has_function_privilege(status.oid, 'EXECUTE'), false) AS routine
+    FROM (SELECT pg_catalog.to_regclass($1)::oid AS oid) AS ledger,
+         (SELECT pg_catalog.to_regprocedure($2)::oid AS oid) AS status
+  `, [table, routine]);
+  const row = access.rows[0];
+  if (row?.present !== true) return [];
+  let source: string;
+  if (row.readable) {
+    source = `
+      SELECT version, name, checksum, applied_at
+      FROM ${qualified(schema, "schema_migrations")}
+      ORDER BY version
+    `;
+  } else if (row.routine) {
+    source = `
+      SELECT version, name, checksum, applied_at
+      FROM ${qualified(schema, "schema_migration_status")}()
+      ORDER BY version
+    `;
+  } else {
+    throw new MigrationError(
+      `the connected role cannot read the migration history of schema ${schema}: it has no SELECT on schema_migrations, and schema_migration_status() (migration 4) is missing or not granted to it. Run \`switchyard-postgres migrate\` as the schema owner, then retry.`
+    );
+  }
   const result = await client.query<{
     version: number;
     name: string;
     checksum: string;
     applied_at: Date;
-  }>(`
-    SELECT version, name, checksum, applied_at
-    FROM ${qualified(schema, "schema_migrations")}
-    ORDER BY version
-  `);
-  return result.rows.map((row) => Object.freeze({
-    version: Number(row.version),
-    name: row.name,
-    checksum: row.checksum,
-    appliedAt: new Date(row.applied_at).toISOString()
+  }>(source);
+  return result.rows.map((applied) => Object.freeze({
+    version: Number(applied.version),
+    name: applied.name,
+    checksum: applied.checksum,
+    appliedAt: new Date(applied.applied_at).toISOString()
   }));
 }
 
@@ -427,6 +467,8 @@ export async function migrationStatus(
 /**
  * Throw unless the schema is exactly at the version this library expects.
  * Stores do not migrate on their own; call this at startup to fail fast.
+ * Works as the schema owner, the runtime role (through the
+ * schema_migration_status() routine) and the reader role.
  */
 export async function assertSchemaCurrent(options: MigrationConnectionOptions): Promise<void> {
   const status = await migrationStatus(options);
