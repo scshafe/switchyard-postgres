@@ -5,7 +5,10 @@
 //
 // With SWITCHYARD_POSTGRES_SMOKE_CONSUMER set to a directory that already has
 // the package installed (the publish workflow's install-back of the registry
-// version), skip pack+install and run the same smokes there.
+// version), skip pack+install and run the same smokes there. Either way the
+// consumer must depend directly on the engine at the version pinned in
+// devDependencies, as a user installs it: a peer that pnpm only auto-installs
+// is not importable from the consumer (0.1.0's release job).
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -77,10 +80,26 @@ async function packAndInstall(packageJson) {
     "--prefer-offline",
     "--store-dir",
     storeDir,
+    "--save-exact",
     join(scratch, packed.basename),
     peer.spec
   ], { cwd: consumer });
   return consumer;
+}
+
+/** The consumer lists the engine itself, at the version this tree pins. */
+async function assertDirectEngineDependency(consumer, packageJson) {
+  const consumerJson = JSON.parse(await readFile(join(consumer, "package.json"), "utf8"));
+  const declared = consumerJson.dependencies?.["@scshafe/switchyard"];
+  const { spec } = await peerSpec(packageJson);
+  const expected = spec.startsWith("@scshafe/switchyard@") ? spec.slice("@scshafe/switchyard@".length) : undefined;
+  if (declared === undefined || (expected !== undefined && declared !== expected)) {
+    throw new Error(
+      `consumer ${consumer} must depend directly on @scshafe/switchyard${expected === undefined ? "" : `@${expected}`}` +
+      ` (found ${declared === undefined ? "no dependency" : JSON.stringify(declared)}); install it next to` +
+      " @scshafe/switchyard-postgres as the README does, not only as an auto-installed peer"
+    );
+  }
 }
 
 try {
@@ -88,6 +107,7 @@ try {
   const consumer = installedConsumer === undefined
     ? await packAndInstall(packageJson)
     : resolve(installedConsumer);
+  await assertDirectEngineDependency(consumer, packageJson);
 
   const installedSql = (await readdir(join(consumer, "node_modules/@scshafe/switchyard-postgres/sql"))).sort();
   const smoke = `
