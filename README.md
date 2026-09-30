@@ -30,7 +30,7 @@ Put a token with `read:packages` in your user-level npmrc (in `$HOME`, as the
 `_authToken` for `npm.pkg.github.com`), never in the project. Then:
 
 ```sh
-pnpm add @scshafe/switchyard@2.2.0 @scshafe/switchyard-postgres@0.1.0
+pnpm add @scshafe/switchyard@2.2.0 @scshafe/switchyard-postgres@0.1.1
 ```
 
 `pg` comes in as a dependency.

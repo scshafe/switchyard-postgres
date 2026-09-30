@@ -1,5 +1,7 @@
 // Install-back check for the publish workflow: given a consumer directory in
-// which `pnpm add --save-exact @scshafe/switchyard-postgres@<version>` has run,
+// which `pnpm add --save-exact @scshafe/switchyard@<pinned>
+// @scshafe/switchyard-postgres@<version>` has run (only this package's
+// integrity is compared; the engine is not this repository's release),
 // read the integrity pnpm recorded (and verified against the downloaded bytes)
 // from the consumer's pnpm-lock.yaml and require it to equal every expected
 // integrity passed on the command line (the local pack of the tag, the

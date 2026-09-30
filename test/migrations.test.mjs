@@ -8,8 +8,6 @@ import { readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import { promisify } from "node:util";
 
-import pg from "pg";
-
 import { createArtifactEnvelope } from "@scshafe/switchyard/contracts/artifact";
 import { createGraphDefinition, graphDefinitionRef } from "@scshafe/switchyard/graph/definition";
 import {
@@ -29,6 +27,7 @@ import {
   closeAdmin,
   ensureLoginRole,
   loginUrl,
+  newPool,
   openEmptyDatabase,
   openScenarioDatabase,
   READER_LOGIN,
@@ -73,8 +72,12 @@ async function tables(pool, schema) {
   return result.rows.map((row) => row.table_name);
 }
 
-async function withPool(url, operation) {
-  const pool = new pg.Pool({ connectionString: url, max: 2 });
+// Always through newPool: pool.end() resolves before the backends have
+// exited, so the scenario's DROP DATABASE ... WITH (FORCE) can still reach a
+// backend of an ended pool. Its FATAL 57P01 arrives as a pool 'error' event,
+// which without a listener is an uncaught exception that fails the test.
+async function withPool(url, operation, purpose = "extra") {
+  const pool = newPool({ connectionString: url, max: 2 }, purpose);
   try {
     return await operation(pool);
   } finally {
@@ -218,7 +221,7 @@ test("schema names are validated and a custom schema coexists with the default",
         database.runtimePool.query("SELECT sy_custom.load_graph('x', 1)"),
         (error) => error.code === "42501"
       );
-    });
+    }, "custom-runtime");
     const counts = await database.ownerPool.query(`
       SELECT (SELECT count(*) FROM sy_custom.units)::int AS custom_units,
              (SELECT count(*) FROM switchyard.units)::int AS default_units

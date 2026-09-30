@@ -225,14 +225,26 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Install as a user does (README): the engine and this package, both
+          # direct dependencies. autoInstallPeers alone satisfies the peer for
+          # switchyard-postgres but does not link @scshafe/switchyard into the
+          # consumer's node_modules, so the consumer cannot import it (0.1.0's
+          # smoke failed with ERR_MODULE_NOT_FOUND). The engine version is the
+          # exact one this tag was verified against (devDependencies).
+          engine="$(node -p 'require("./package.json").devDependencies["@scshafe/switchyard"]')"
+          [[ "$engine" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::devDependencies @scshafe/switchyard must be an exact version (got $engine)"; exit 1; }
           consumer="$RUNNER_TEMP/consumer"
           mkdir -p "$consumer"
           cd "$consumer"
           printf '{\n  "private": true,\n  "type": "module"\n}\n' > package.json
           printf '@scshafe:registry=%s\n' "$REGISTRY" > .npmrc
-          # autoInstallPeers brings the @scshafe/switchyard peer from the registry.
-          pnpm add --save-exact --ignore-scripts "@scshafe/switchyard-postgres@$VERSION"
+          pnpm add --save-exact --ignore-scripts \
+            "@scshafe/switchyard@$engine" \
+            "@scshafe/switchyard-postgres@$VERSION"
 
+      # Compares @scshafe/switchyard-postgres only; the engine is someone
+      # else's release and is not re-verified here.
       - name: Compare registry integrity with the local pack
         run: >-
           node scripts/check-install-back.mjs "$RUNNER_TEMP/consumer"

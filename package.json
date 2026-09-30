@@ -1,6 +1,6 @@
 {
   "name": "@scshafe/switchyard-postgres",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PostgreSQL graph store, unit store and human-decision recording for @scshafe/switchyard.",
   "type": "module",
   "license": "MIT",

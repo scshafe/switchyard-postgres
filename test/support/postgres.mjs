@@ -7,6 +7,7 @@
 // so every conformance scenario also exercises the least-privilege grants.
 
 import { createHash, randomBytes } from "node:crypto";
+import { basename } from "node:path";
 
 import pg from "pg";
 
@@ -34,10 +35,24 @@ export function loginUrl(database, user) {
   return url.toString();
 }
 
+// Every connection names its test file and purpose, so a server log with %a
+// in log_line_prefix shows which file owns (or killed) a backend.
+const FILE_TAG = basename(process.argv[1] ?? "unknown", ".test.mjs");
+export function applicationName(purpose) {
+  return `sy-test:${FILE_TAG}:${purpose}`.slice(0, 63);
+}
+
+/** `url` with application_name set (it wins over a pool's own setting). */
+export function withApplicationName(url, purpose) {
+  const tagged = new URL(url);
+  tagged.searchParams.set("application_name", applicationName(purpose));
+  return tagged.toString();
+}
+
 // pg emits 'error' on the pool when an idle client's backend goes away (the
 // crash tests terminate backends on purpose); an application must listen.
-export function newPool(options) {
-  const pool = new pg.Pool(options);
+export function newPool(options, purpose = "pool") {
+  const pool = new pg.Pool({ application_name: applicationName(purpose), ...options });
   pool.on("error", () => undefined);
   return pool;
 }
@@ -53,7 +68,7 @@ const templateName = `sy_tpl_${createHash("sha256")
 
 let adminPool;
 function admin() {
-  adminPool ??= newPool({ connectionString: adminUrl(), max: 2 });
+  adminPool ??= newPool({ connectionString: adminUrl(), max: 2 }, "admin");
   return adminPool;
 }
 
@@ -97,7 +112,7 @@ async function ensureTemplate() {
     if (found.rows.length === 0) {
       const building = `${templateName}_building_${randomBytes(3).toString("hex")}`;
       await client.query(`CREATE DATABASE ${quote(building)}`);
-      await migrate({ connectionString: adminUrl(building) });
+      await migrate({ connectionString: withApplicationName(adminUrl(building), "template-migrate") });
       await client.query(`ALTER DATABASE ${quote(building)} RENAME TO ${quote(templateName)}`);
     }
     await ensureLogin(client, RUNTIME_LOGIN, "switchyard_runtime");
@@ -125,9 +140,9 @@ export async function openScenarioDatabase(prefix = "s") {
     client.query(`CREATE DATABASE ${quote(name)} TEMPLATE ${quote(templateName)}`)
   );
   const pools = {
-    ownerPool: newPool({ connectionString: adminUrl(name), max: 4 }),
-    runtimePool: newPool({ connectionString: loginUrl(name, RUNTIME_LOGIN), max: 4 }),
-    readerPool: newPool({ connectionString: loginUrl(name, READER_LOGIN), max: 2 })
+    ownerPool: newPool({ connectionString: adminUrl(name), max: 4 }, "owner"),
+    runtimePool: newPool({ connectionString: loginUrl(name, RUNTIME_LOGIN), max: 4 }, "runtime"),
+    readerPool: newPool({ connectionString: loginUrl(name, READER_LOGIN), max: 2 }, "reader")
   };
   return {
     name,
@@ -143,11 +158,11 @@ export async function openScenarioDatabase(prefix = "s") {
 export async function openEmptyDatabase(prefix = "e") {
   const name = scenarioName(prefix);
   await withServerLock((client) => client.query(`CREATE DATABASE ${quote(name)}`));
-  const ownerPool = newPool({ connectionString: adminUrl(name), max: 4 });
+  const ownerPool = newPool({ connectionString: adminUrl(name), max: 4 }, "owner");
   return {
     name,
     ownerPool,
-    url: adminUrl(name),
+    url: withApplicationName(adminUrl(name), "url"),
     async close() {
       await ownerPool.end().catch(() => undefined);
       await dropDatabase(name);
