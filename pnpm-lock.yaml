@@ -4,17 +4,20 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@scshafe/switchyard': file:vendor/scshafe-switchyard-2.1.0.tgz
+
 importers:
 
   .:
     dependencies:
+      '@scshafe/switchyard':
+        specifier: file:vendor/scshafe-switchyard-2.1.0.tgz
+        version: file:vendor/scshafe-switchyard-2.1.0.tgz
       pg:
         specifier: ^8.23.0
         version: 8.23.0
     devDependencies:
-      '@scshafe/switchyard':
-        specifier: file:vendor/scshafe-switchyard-2.1.0.tgz
-        version: file:vendor/scshafe-switchyard-2.1.0.tgz
       '@types/node':
         specifier: ^22.15.0
         version: 22.20.4

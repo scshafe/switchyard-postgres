@@ -1,1 +1,9 @@
 strictDepBuilds: true
+
+# TEMPORARY (until @scshafe/switchyard 2.1.0 is on GitHub Packages): resolve
+# the engine from the tarball packed from switchyard's 2.1.0 branch (edf41be).
+# Switch: delete this block and vendor/, run `pnpm install` with a
+# read:packages token, commit the lockfile. publish.yml refuses to release
+# while this override exists.
+overrides:
+  "@scshafe/switchyard": file:vendor/scshafe-switchyard-2.1.0.tgz
