@@ -42,14 +42,18 @@ export {
 } from "./unit-store.js";
 export {
   HumanTurnNotPendingError,
+  InvalidHumanAnswerError,
   MAX_HUMAN_DECISION_PAGE,
   PostgresHumanDecisions,
   type HumanDecisionRecord,
+  type HumanTurnSelector,
   type ListHumanDecisionsInput,
   type ListPendingHumanTurnsInput,
   type PendingHumanTurn,
   type PostgresHumanDecisionsOptions,
+  type RecordHumanAnswerInput,
   type RecordHumanDecisionInput,
+  type RecordedHumanAnswer,
   type RecordedHumanDecision
 } from "./human-decisions.js";
 
