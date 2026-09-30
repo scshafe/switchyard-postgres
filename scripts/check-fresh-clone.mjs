@@ -14,6 +14,7 @@ async function run(command, args, options = {}) {
     cwd: options.cwd ?? root,
     env: {
       ...process.env,
+      ...options.env,
       npm_config_offline: "true",
       npm_config_audit: "false",
       npm_config_fund: "false"
@@ -64,9 +65,11 @@ try {
     ],
     { cwd: clone }
   );
-  // lib/ is not committed: build it from src/ before verifying.
-  await run("pnpm", ["run", "build"], { cwd: clone });
-  await run("pnpm", ["run", "verify"], { cwd: clone });
+  // lib/ is not committed: build it from src/ before verifying. The packed
+  // install smoke inside verify installs again; keep it on the same store.
+  const cloneEnv = { npm_config_store_dir: storeDir };
+  await run("pnpm", ["run", "build"], { cwd: clone, env: cloneEnv });
+  await run("pnpm", ["run", "verify"], { cwd: clone, env: cloneEnv });
   const cloneStatus = await run("git", ["status", "--porcelain=v1"], {
     cwd: clone
   });
