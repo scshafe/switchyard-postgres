@@ -1,0 +1,79 @@
+{
+  "name": "@scshafe/switchyard-postgres",
+  "version": "0.1.0",
+  "description": "PostgreSQL graph store, unit store and human-decision recording for @scshafe/switchyard.",
+  "type": "module",
+  "license": "MIT",
+  "author": "switchyard-postgres contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scshafe/switchyard-postgres.git"
+  },
+  "bugs": {
+    "url": "https://github.com/scshafe/switchyard-postgres/issues"
+  },
+  "homepage": "https://github.com/scshafe/switchyard-postgres#readme",
+  "keywords": [
+    "switchyard",
+    "postgres",
+    "node-graph",
+    "durable-execution",
+    "workflow"
+  ],
+  "engines": {
+    "node": ">=22.22.0 <23 || >=24.18.0 <25"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "bin": {
+    "switchyard-postgres": "./lib/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "sql",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "tsconfig.json"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "pnpm run clean && tsc -p tsconfig.json",
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/test-postgres.mjs",
+    "test:payload": "node scripts/check-package-payload.mjs",
+    "test:release-artifact": "node scripts/check-release-artifact.mjs",
+    "test:install": "node scripts/check-pack-install.mjs",
+    "test:fresh-clone": "node scripts/check-fresh-clone.mjs",
+    "check": "pnpm run build && pnpm run test && pnpm run test:payload && pnpm run test:release-artifact && pnpm run test:install",
+    "verify": "pnpm run clean && pnpm run check",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run verify",
+    "release:manifest": "node scripts/write-release-manifest.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  },
+  "peerDependencies": {
+    "@scshafe/switchyard": "^2.1.0"
+  },
+  "devDependencies": {
+    "@scshafe/switchyard": "file:vendor/scshafe-switchyard-2.1.0.tgz",
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.9.3"
+  }
+}
