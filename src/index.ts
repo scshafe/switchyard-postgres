@@ -24,3 +24,14 @@ export {
   type MigrationDescriptor,
   type MigrationStatus
 } from "./migrations.js";
+export {
+  PostgresGraphStore,
+  loadGraphOnClient,
+  type PostgresGraphStoreOptions
+} from "./graph-store.js";
+export {
+  PostgresUnitStore,
+  type PostgresUnitStoreCheckpointContext,
+  type PostgresUnitStoreOptions,
+  type SettlePhase
+} from "./unit-store.js";
