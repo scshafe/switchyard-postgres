@@ -62,7 +62,7 @@ docker run -d --name switchyard-db -p 127.0.0.1:5432:5432 \
 ```sh
 export SWITCHYARD_DATABASE_URL=postgres://postgres:devpassword@127.0.0.1:5432/postgres
 pnpm exec switchyard-postgres migrate
-# {"schema":"switchyard","applied":[1,2,3],"currentVersion":3,"roles":{"runtime":"switchyard_runtime","reader":"switchyard_reader"}}
+# {"schema":"switchyard","applied":[1,2,3,4],"currentVersion":4,"roles":{"runtime":"switchyard_runtime","reader":"switchyard_reader"}}
 ```
 
 `migrate` is idempotent, so you can run it on every deploy. It creates the schema, applies

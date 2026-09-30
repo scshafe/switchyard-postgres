@@ -38,7 +38,7 @@ before meaningful changes.
   `README.md`, `CHANGELOG.md` or `sql/`) needs
   `pnpm run build && pnpm run release:manifest` in the same commit.
 - `@scshafe/switchyard` comes from GitHub Packages (dev dependency pinned
-  exactly, peer `^2.1.0`). Never vendor it or add a pnpm override:
+  exactly, peer `^2.2.0`). Never vendor it or add a pnpm override:
   `publish.yml` refuses to release while either exists.
 
 ## Verification

@@ -5,6 +5,51 @@ Versions follow [SemVer](https://semver.org/). A release is the annotated tag
 `v<x.y.z>` on a commit on `main` whose `package.json` version is `<x.y.z>`;
 published versions are never deleted, replaced or reused.
 
+## 0.2.0 — 2026-09-30
+
+Found by a first-run guide author and a fresh-eyes tester on switchyard
+2.2.0 + 0.1.1. Migration 004 is new; run `switchyard-postgres migrate`
+before deploying 0.2.0 (`assertSchemaCurrent` refuses a version-3 schema).
+
+- **Fixed: `assertSchemaCurrent` as the runtime role.** It read
+  `schema_migrations`, on which the runtime role (EXECUTE on routines, no
+  relation privilege) has no privilege, so the README quick start failed
+  with `permission denied for table schema_migrations`. Migration 004 adds
+  `schema_migration_status()`, a SECURITY DEFINER routine returning only
+  the applied-migration ledger; the runtime role gets EXECUTE on it and
+  still holds no relation privilege. `migrationStatus` /
+  `assertSchemaCurrent` read the ledger as the connected role may, and a
+  runtime role on a pre-004 schema is told to run `migrate`.
+- **Added: `humanDecisions.recordAnswer`.** Takes what a person answered
+  (`approved` / `denied` at an approval node, `accepted` / `rejected`, with
+  optional `notes`, at a review node, or an ordinary human node's outcome),
+  names the turn by `queueId` or by `unitId` + `nodeId`, and maps the answer
+  to the stored outcome (`accepted:<outcome>`, `rework`, `rejected`) with
+  switchyard's `approvalReviewHumanDecision`. Invalid answers throw
+  `InvalidHumanAnswerError`, which lists the valid ones. Optional
+  `principalId` guard. `record` is unchanged.
+- **Changed: `listPending` order and fields.** A turn's `outcomes` follow
+  the node's declared order instead of lexical order. New fields: `answers`
+  (the person-facing choices), `notesAnswers` and `role` (the node's part in
+  an approval/review expansion). `listPending` also filters by `unitId`.
+- **Added: views `unit_status`, `unit_positions`, `unit_outputs`** (reader
+  role): a unit's overall status (`awaiting_human`, `active`, `completed`,
+  `failed`), final terminal outcome and the artifact it carries; its open
+  queue occurrences with FIFO position; and every artifact its turns
+  produced, with a `jsonb` payload projection.
+- **Added: `createPostgresStores({ connectionString })`**, with
+  `maxConnections`, `onPoolError`, and `close()`; the result also exposes
+  `pool`. `pg` stays a regular dependency (the package opens connections
+  itself; the stores take any `pg.Pool`-shaped object), documented in the
+  README.
+- **Peer range: `@scshafe/switchyard` `^2.2.0`** (was `^2.1.0`).
+  `recordAnswer` and the `answers` / `role` fields use
+  `approvalReviewHumanDecision`, `approvalReviewRole` and `reviewNotes`,
+  which switchyard exports from 2.2.0.
+- README: the quick start needs no `pg` import, records the review with
+  `recordAnswer` and reads the new views; its test now runs the README's
+  own code blocks and SQL instead of a copy.
+
 ## 0.1.1 — 2026-09-30
 
 No change to the library code, SQL or public API; 0.1.0's release job
