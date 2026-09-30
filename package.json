@@ -1,6 +1,6 @@
 {
   "name": "@scshafe/switchyard-postgres",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "PostgreSQL graph store, unit store and human-decision recording for @scshafe/switchyard.",
   "type": "module",
   "license": "MIT",
@@ -68,7 +68,7 @@
     "pg": "^8.23.0"
   },
   "peerDependencies": {
-    "@scshafe/switchyard": "^2.1.0"
+    "@scshafe/switchyard": "^2.2.0"
   },
   "devDependencies": {
     "@scshafe/switchyard": "2.2.0",

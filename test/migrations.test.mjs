@@ -87,8 +87,8 @@ async function withPool(url, operation, purpose = "extra") {
 
 test("migration files match the pinned manifest", async () => {
   const loaded = await loadMigrations();
-  assert.deepEqual(loaded.map((migration) => migration.version), [1, 2, 3]);
-  assert.equal(LATEST_MIGRATION_VERSION, 3);
+  assert.deepEqual(loaded.map((migration) => migration.version), [1, 2, 3, 4]);
+  assert.equal(LATEST_MIGRATION_VERSION, 4);
   for (const migration of MIGRATIONS) {
     const bytes = await readFile(new URL(`../sql/${migration.fileName}`, import.meta.url), "utf8");
     assert.equal(createHash("sha256").update(bytes).digest("hex"), migration.checksum, migration.fileName);
@@ -101,18 +101,19 @@ test("a fresh database migrates to the latest version and a re-run is a no-op", 
   try {
     const before = await migrationStatus({ pool: database.ownerPool });
     assert.equal(before.currentVersion, 0);
-    assert.deepEqual(before.pending.map((migration) => migration.version), [1, 2, 3]);
+    assert.deepEqual(before.pending.map((migration) => migration.version), [1, 2, 3, 4]);
 
     const first = await migrate({ pool: database.ownerPool });
-    assert.deepEqual(first.applied, [1, 2, 3]);
-    assert.equal(first.currentVersion, 3);
+    assert.deepEqual(first.applied, [1, 2, 3, 4]);
+    assert.equal(first.currentVersion, 4);
     assert.deepEqual(first.roles, { runtime: "switchyard_runtime", reader: "switchyard_reader" });
     assert.deepEqual(await tables(database.ownerPool, "switchyard"), [
       "artifacts", "dead_letters", "fairness_cursors", "graph_nodes", "graphs",
       "human_decisions", "join_progress", "node_definitions", "outbox",
       "pending_human_turns", "schema_migrations", "turn_attempts",
       "turn_completion_cache", "turn_failures", "turn_settlements", "turns",
-      "unit_artifacts", "unit_journey", "unit_leases", "unit_queue", "units"
+      "unit_artifacts", "unit_journey", "unit_leases", "unit_outputs",
+      "unit_positions", "unit_queue", "unit_status", "units"
     ]);
 
     const recorded = await database.ownerPool.query(
@@ -122,13 +123,13 @@ test("a fresh database migrates to the latest version and a re-run is a no-op", 
 
     const second = await migrate({ pool: database.ownerPool });
     assert.deepEqual(second.applied, []);
-    assert.equal(second.currentVersion, 3);
+    assert.equal(second.currentVersion, 4);
     const third = await migrate({ connectionString: database.url });
     assert.deepEqual(third.applied, []);
-    assert.equal((await database.ownerPool.query("SELECT count(*)::int AS n FROM switchyard.schema_migrations")).rows[0].n, 3);
+    assert.equal((await database.ownerPool.query("SELECT count(*)::int AS n FROM switchyard.schema_migrations")).rows[0].n, 4);
 
     const after = await migrationStatus({ connectionString: database.url });
-    assert.equal(after.currentVersion, 3);
+    assert.equal(after.currentVersion, 4);
     assert.deepEqual(after.pending, []);
     await assertSchemaCurrent({ pool: database.ownerPool });
   } finally {
@@ -144,7 +145,7 @@ test("concurrent migrate calls serialize: one applies, the other finds it curren
       migrate({ connectionString: database.url })
     ]);
     const applied = results.map((result) => result.applied.join(",")).sort();
-    assert.deepEqual(applied, ["", "1,2,3"]);
+    assert.deepEqual(applied, ["", "1,2,3,4"]);
   } finally {
     await database.close();
   }
@@ -157,7 +158,7 @@ test("targetVersion stops early and a later run applies the rest", async () => {
     assert.deepEqual(partial.applied, [1]);
     await assert.rejects(assertSchemaCurrent({ pool: database.ownerPool }), MigrationError);
     const rest = await migrate({ pool: database.ownerPool });
-    assert.deepEqual(rest.applied, [2, 3]);
+    assert.deepEqual(rest.applied, [2, 3, 4]);
     await assert.rejects(migrate({ pool: database.ownerPool, targetVersion: 2 }), /never run backwards/);
     await assert.rejects(migrate({ pool: database.ownerPool, targetVersion: 9 }), SwitchyardPostgresConfigError);
   } finally {
@@ -193,7 +194,7 @@ test("schema names are validated and a custom schema coexists with the default",
   const database = await openScenarioDatabase("mig");
   try {
     const custom = await migrate({ pool: database.ownerPool, schema: "sy_custom" });
-    assert.deepEqual(custom.applied, [1, 2, 3]);
+    assert.deepEqual(custom.applied, [1, 2, 3, 4]);
     assert.deepEqual(custom.roles, { runtime: "sy_custom_runtime", reader: "sy_custom_reader" });
     await ensureLoginRole("sy_test_custom_runtime", "sy_custom_runtime");
     const customLogin = new URL(loginUrl(database.name, RUNTIME_LOGIN));
@@ -263,6 +264,75 @@ test("the runtime role only executes routines and the reader only reads", async 
   }
 });
 
+test("assertSchemaCurrent works as the runtime login and as the reader (README quick start)", async () => {
+  const database = await openScenarioDatabase("mig");
+  try {
+    // The runtime login is the one the README connects the application as.
+    await assertSchemaCurrent({ pool: database.runtimePool });
+    await assertSchemaCurrent({ pool: database.readerPool });
+    await assertSchemaCurrent({ connectionString: loginUrl(database.name, RUNTIME_LOGIN) });
+    await assertSchemaCurrent({ connectionString: loginUrl(database.name, READER_LOGIN) });
+    for (const pool of [database.runtimePool, database.readerPool]) {
+      const status = await migrationStatus({ pool });
+      assert.equal(status.currentVersion, LATEST_MIGRATION_VERSION);
+      assert.deepEqual(
+        status.applied.map(({ version, name, checksum }) => ({ version, name, checksum })),
+        MIGRATIONS.map(({ version, name, checksum }) => ({ version, name, checksum }))
+      );
+      assert.deepEqual(status.pending, []);
+    }
+
+    // Least privilege is unchanged: the runtime role reads the ledger only
+    // through the status routine and still holds no relation privilege.
+    await assert.rejects(
+      database.runtimePool.query("SELECT * FROM switchyard.schema_migrations"),
+      (error) => error.code === "42501"
+    );
+    const privileges = await database.ownerPool.query(`
+      SELECT count(*)::int AS n
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'switchyard'
+        AND relation.relkind IN ('r', 'v', 'm', 'S')
+        AND (pg_catalog.has_table_privilege('switchyard_runtime', relation.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+          OR (relation.relkind = 'S' AND pg_catalog.has_sequence_privilege('switchyard_runtime', relation.oid, 'USAGE, SELECT, UPDATE')))
+    `);
+    assert.equal(privileges.rows[0].n, 0);
+    // The reader holds SELECT and nothing else: no routine, not even the status one.
+    await assert.rejects(
+      database.readerPool.query("SELECT * FROM switchyard.schema_migration_status()"),
+      (error) => error.code === "42501"
+    );
+  } finally {
+    await database.close();
+  }
+});
+
+test("the runtime role gets a clear error from a schema that predates the status routine", async () => {
+  const database = await openEmptyDatabase("mig");
+  try {
+    await migrate({ pool: database.ownerPool, targetVersion: 3 });
+    await ensureLoginRole(RUNTIME_LOGIN, "switchyard_runtime");
+    await ensureLoginRole(READER_LOGIN, "switchyard_reader");
+    const runtimeUrl = loginUrl(database.name, RUNTIME_LOGIN);
+    await withPool(runtimeUrl, async (pool) => {
+      await assert.rejects(
+        assertSchemaCurrent({ pool }),
+        (error) => error instanceof MigrationError
+          && /cannot read the migration history of schema switchyard/.test(error.message)
+          && /switchyard-postgres migrate/.test(error.message)
+      );
+    }, "runtime-v3");
+    await withPool(loginUrl(database.name, READER_LOGIN), async (pool) => {
+      await assert.rejects(assertSchemaCurrent({ pool }), /is at version 3; this library needs 4/);
+    }, "reader-v3");
+    await migrate({ pool: database.ownerPool });
+    await withPool(runtimeUrl, (pool) => assertSchemaCurrent({ pool }), "runtime-v4");
+  } finally {
+    await database.close();
+  }
+});
+
 test("evidence is append-only even for the schema owner", async () => {
   const database = await openScenarioDatabase("mig");
   try {
@@ -310,9 +380,9 @@ test("the CLI migrates and reports status as JSON", async () => {
     const env = { ...process.env, SWITCHYARD_DATABASE_URL: database.url };
     const status = JSON.parse((await run(process.execPath, [cli, "status", "--schema", "cli_schema"], { env })).stdout);
     assert.equal(status.currentVersion, 0);
-    assert.equal(status.pending.length, 3);
+    assert.equal(status.pending.length, 4);
     const migrated = JSON.parse((await run(process.execPath, [cli, "migrate", "--schema", "cli_schema", "--no-roles"], { env })).stdout);
-    assert.deepEqual(migrated.applied, [1, 2, 3]);
+    assert.deepEqual(migrated.applied, [1, 2, 3, 4]);
     assert.equal(migrated.roles, null);
     const again = JSON.parse((await run(process.execPath, [cli, "migrate", "--url", database.url, "--schema", "cli_schema", "--no-roles"])).stdout);
     assert.deepEqual(again.applied, []);
