@@ -22,7 +22,7 @@ export interface MigrationDescriptor {
   readonly version: number;
   readonly name: string;
   /** File name under the package's sql/ directory. */
-  readonly file: string;
+  readonly fileName: string;
   /** SHA-256 of the file's template bytes (before schema substitution). */
   readonly checksum: string;
 }
@@ -35,19 +35,19 @@ export const MIGRATIONS: readonly MigrationDescriptor[] = Object.freeze([
   Object.freeze({
     version: 1,
     name: "engine_schema",
-    file: "001_engine_schema.sql",
+    fileName: "001_engine_schema.sql",
     checksum: "f01a0da1e3827129fcecb371527554ceee8624b72caaffcc58feda111ba25710"
   }),
   Object.freeze({
     version: 2,
     name: "store_routines",
-    file: "002_store_routines.sql",
+    fileName: "002_store_routines.sql",
     checksum: "096b6ee8a0f37f8a9946e8add8f0cd3f4b16fbab9f42951b2a7984b38bd4b57a"
   }),
   Object.freeze({
     version: 3,
     name: "human_decisions_and_views",
-    file: "003_human_decisions_and_views.sql",
+    fileName: "003_human_decisions_and_views.sql",
     checksum: "d4cfee7bd82ff2496e00b1df43b77ecc10360a36cb40e68ee6b218da54e8337f"
   })
 ]);
@@ -94,11 +94,11 @@ function sha256(text: string): string {
 /** Read every migration template and prove it matches the pinned checksum. */
 export async function loadMigrations(): Promise<readonly LoadedMigration[]> {
   return Promise.all(MIGRATIONS.map(async (migration) => {
-    const template = await readFile(new URL(migration.file, SQL_DIRECTORY), "utf8");
+    const template = await readFile(new URL(migration.fileName, SQL_DIRECTORY), "utf8");
     const actual = sha256(template);
     if (actual !== migration.checksum) {
       throw new MigrationError(
-        `migration ${migration.file} does not match its pinned checksum (${actual} != ${migration.checksum})`
+        `migration ${migration.fileName} does not match its pinned checksum (${actual} != ${migration.checksum})`
       );
     }
     return Object.freeze({ ...migration, template });
@@ -225,7 +225,7 @@ function assertAppliedHistory(
     }
     if (known.checksum !== row.checksum || known.name !== row.name) {
       throw new MigrationError(
-        `applied migration ${row.version} (${row.name}) differs from this library's ${known.file}; applied migrations are immutable`
+        `applied migration ${row.version} (${row.name}) differs from this library's ${known.fileName}; applied migrations are immutable`
       );
     }
   }

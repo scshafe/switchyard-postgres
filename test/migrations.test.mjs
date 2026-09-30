@@ -87,8 +87,8 @@ test("migration files match the pinned manifest", async () => {
   assert.deepEqual(loaded.map((migration) => migration.version), [1, 2, 3]);
   assert.equal(LATEST_MIGRATION_VERSION, 3);
   for (const migration of MIGRATIONS) {
-    const bytes = await readFile(new URL(`../sql/${migration.file}`, import.meta.url), "utf8");
-    assert.equal(createHash("sha256").update(bytes).digest("hex"), migration.checksum, migration.file);
+    const bytes = await readFile(new URL(`../sql/${migration.fileName}`, import.meta.url), "utf8");
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), migration.checksum, migration.fileName);
     assert.doesNotMatch(bytes, /\b(email|gmail|mailbox|jobtrack|unsubscribe|substrate|mission_pipeline)\b/i);
   }
 });
