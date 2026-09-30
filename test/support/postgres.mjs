@@ -34,6 +34,14 @@ export function loginUrl(database, user) {
   return url.toString();
 }
 
+// pg emits 'error' on the pool when an idle client's backend goes away (the
+// crash tests terminate backends on purpose); an application must listen.
+export function newPool(options) {
+  const pool = new pg.Pool(options);
+  pool.on("error", () => undefined);
+  return pool;
+}
+
 function quote(identifier) {
   return `"${identifier.replaceAll("\"", "\"\"")}"`;
 }
@@ -45,7 +53,7 @@ const templateName = `sy_tpl_${createHash("sha256")
 
 let adminPool;
 function admin() {
-  adminPool ??= new pg.Pool({ connectionString: adminUrl(), max: 2 });
+  adminPool ??= newPool({ connectionString: adminUrl(), max: 2 });
   return adminPool;
 }
 
@@ -117,9 +125,9 @@ export async function openScenarioDatabase(prefix = "s") {
     client.query(`CREATE DATABASE ${quote(name)} TEMPLATE ${quote(templateName)}`)
   );
   const pools = {
-    ownerPool: new pg.Pool({ connectionString: adminUrl(name), max: 4 }),
-    runtimePool: new pg.Pool({ connectionString: loginUrl(name, RUNTIME_LOGIN), max: 4 }),
-    readerPool: new pg.Pool({ connectionString: loginUrl(name, READER_LOGIN), max: 2 })
+    ownerPool: newPool({ connectionString: adminUrl(name), max: 4 }),
+    runtimePool: newPool({ connectionString: loginUrl(name, RUNTIME_LOGIN), max: 4 }),
+    readerPool: newPool({ connectionString: loginUrl(name, READER_LOGIN), max: 2 })
   };
   return {
     name,
@@ -135,7 +143,7 @@ export async function openScenarioDatabase(prefix = "s") {
 export async function openEmptyDatabase(prefix = "e") {
   const name = scenarioName(prefix);
   await withServerLock((client) => client.query(`CREATE DATABASE ${quote(name)}`));
-  const ownerPool = new pg.Pool({ connectionString: adminUrl(name), max: 4 });
+  const ownerPool = newPool({ connectionString: adminUrl(name), max: 4 });
   return {
     name,
     ownerPool,
