@@ -37,10 +37,9 @@ before meaningful changes.
   packed file's sha256. A payload change (including `package.json`,
   `README.md`, `CHANGELOG.md` or `sql/`) needs
   `pnpm run build && pnpm run release:manifest` in the same commit.
-- Until `@scshafe/switchyard` 2.1.0 is on GitHub Packages, the engine is
-  resolved from `vendor/` by the override in `pnpm-workspace.yaml`. Removing
-  both (and re-locking against the registry) is a prerequisite of the first
-  release; `publish.yml` refuses to publish while the override exists.
+- `@scshafe/switchyard` comes from GitHub Packages (dev dependency pinned
+  exactly, peer `^2.1.0`). Never vendor it or add a pnpm override:
+  `publish.yml` refuses to release while either exists.
 
 ## Verification
 

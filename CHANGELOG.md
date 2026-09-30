@@ -13,8 +13,10 @@ schema.
 
 - `PostgresGraphStore` and `PostgresUnitStore` implement switchyard's
   `GraphStore` and `UnitStore` (including 2.1.0 declared output contracts,
-  join envelopes and declared failure recovery) and pass switchyard 2.1.0's
-  graph-store and unit-store conformance suites on PostgreSQL 18.
+  join envelopes and declared failure recovery) and pass switchyard's
+  graph-store and unit-store conformance suites (2.2.0) on PostgreSQL 18.
+  Approval and review nodes (switchyard 2.2.0) are ordinary nodes to the
+  store; human approvers and reviewers are recorded like any `human` node.
 - `PostgresHumanDecisions` records decisions at `human` nodes through the
   engine's `recordHumanNodeDecision`, lists pending human turns without
   hydrating the engine, and keeps a decision ledger.

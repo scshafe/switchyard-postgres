@@ -30,7 +30,7 @@ Put a token with `read:packages` in your user-level npmrc (in `$HOME`, as the
 `_authToken` for `npm.pkg.github.com`), never in the project. Then:
 
 ```sh
-pnpm add @scshafe/switchyard@2.1.0 @scshafe/switchyard-postgres@0.1.0
+pnpm add @scshafe/switchyard@2.2.0 @scshafe/switchyard-postgres@0.1.0
 ```
 
 `pg` comes in as a dependency.
@@ -223,15 +223,11 @@ only a member of `switchyard_runtime`, so the suites also check the grants.
 `pnpm run verify` runs the build, the tests and the package checks (payload manifest,
 byte-reproducible pack, pack-and-install smoke, secret and path scan).
 
-**Vendored engine (temporary).** switchyard 2.1.0 isn't on GitHub Packages yet.
-`package.json` pins `@scshafe/switchyard` `2.1.0`, and a pnpm override in
-`pnpm-workspace.yaml` resolves it from `vendor/scshafe-switchyard-2.1.0.tgz`, which was
-packed from switchyard's `rebase-trial/engine-projections` branch at `edf41be`. Once 2.1.0
-is published, delete the override block and `vendor/`, run `pnpm install` with a
-`read:packages` token, and commit the lockfile. From then on CI installs the engine from
-GitHub Packages. That needs the `@scshafe/switchyard` package to grant this repository
-read access ("Manage Actions access"). `publish.yml` refuses to release while the
-override exists.
+**The engine comes from GitHub Packages.** `@scshafe/switchyard` is a dev dependency
+pinned exactly (and a peer dependency `^2.1.0` for consumers), installed from
+npm.pkg.github.com like any `@scshafe` package: locally with a `read:packages` token in your user-level
+`.npmrc`, in CI with the job token, which needs the `@scshafe/switchyard` package to
+grant this repository read access ("Manage Actions access").
 
 ## Releasing
 

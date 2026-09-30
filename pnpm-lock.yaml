@@ -4,20 +4,17 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@scshafe/switchyard': file:vendor/scshafe-switchyard-2.1.0.tgz
-
 importers:
 
   .:
     dependencies:
-      '@scshafe/switchyard':
-        specifier: file:vendor/scshafe-switchyard-2.1.0.tgz
-        version: file:vendor/scshafe-switchyard-2.1.0.tgz
       pg:
         specifier: ^8.23.0
         version: 8.23.0
     devDependencies:
+      '@scshafe/switchyard':
+        specifier: 2.2.0
+        version: 2.2.0
       '@types/node':
         specifier: ^22.15.0
         version: 22.20.4
@@ -30,9 +27,8 @@ importers:
 
 packages:
 
-  '@scshafe/switchyard@file:vendor/scshafe-switchyard-2.1.0.tgz':
-    resolution: {integrity: sha512-C74iCtNfFWseAZnXXGXdczZg+YVts2ZOy0J6/64ML1uzApHj061EJfQobIikJz7W09PELQtCErVkt52+JWEjcw==, tarball: file:vendor/scshafe-switchyard-2.1.0.tgz}
-    version: 2.1.0
+  '@scshafe/switchyard@2.2.0':
+    resolution: {integrity: sha512-z0t6oaQ7SzohZI8xxOXOTtapIxvYq2YqtE6j5Wrps8hR3lAOcBS9Xae+hHyiWyx8bSEhpWmmbnfB6k7VXn0QCQ==, tarball: https://npm.pkg.github.com/download/@scshafe/switchyard/2.2.0/273d279bab8e0f99e6ee3b8c3e65d3ea6727085a}
     engines: {node: '>=22.22.0 <23 || >=24.18.0 <25'}
 
   '@types/node@22.20.4':
@@ -109,7 +105,7 @@ packages:
 
 snapshots:
 
-  '@scshafe/switchyard@file:vendor/scshafe-switchyard-2.1.0.tgz': {}
+  '@scshafe/switchyard@2.2.0': {}
 
   '@types/node@22.20.4':
     dependencies:
