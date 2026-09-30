@@ -65,6 +65,7 @@ import {
 
 import { loadGraphOnClient } from "./graph-store.js";
 import {
+  checkout,
   isPgLeaseLost,
   isPgRetryableBeforeCommit,
   withClient,
@@ -352,9 +353,9 @@ export class PostgresUnitStore implements UnitStore {
     const at = instant.toISOString();
     let lastRetryable: unknown;
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
-      const client = await this.#pool.connect();
+      const lease = await checkout(this.#pool);
+      const client = lease.client;
       let committed = false;
-      let released = false;
       try {
         await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
         let backendPid = -1;
@@ -386,32 +387,28 @@ export class PostgresUnitStore implements UnitStore {
 
         await client.query("COMMIT");
         committed = true;
-        client.release();
-        released = true;
+        lease.release();
         if (options.settle === true) {
           await this.#settleCheckpoint?.("post_commit_reply", { backendPid });
         }
         return result;
       } catch (error) {
         if (!committed) {
+          // A connection that cannot roll back is destroyed, never reused.
           const rolledBack = await client.query("ROLLBACK").then(() => true, () => false);
-          if (!released) {
-            // A connection that could not roll back is discarded, not reused.
-            client.release(rolledBack ? undefined : true);
-            released = true;
+          lease.release(!rolledBack);
+          if (isPgRetryableBeforeCommit(error) && attempt < this.#maxAttempts) {
+            lastRetryable = error;
+            await delay(retryBackoffMs(attempt));
+            continue;
           }
-        }
-        if (!committed && isPgRetryableBeforeCommit(error) && attempt < this.#maxAttempts) {
-          lastRetryable = error;
-          await delay(retryBackoffMs(attempt));
-          continue;
         }
         if (scope.queueId !== undefined && isPgLeaseLost(error)) {
           throw new TurnLeaseLostError(scope.queueId);
         }
         throw error;
       } finally {
-        if (!released) client.release();
+        lease.release();
       }
     }
     throw new Error("PostgresUnitStore serialization retry budget exhausted", {

@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 
 import pg from "pg";
 
-import { pgErrorCode, type PgClient, type PgPool } from "./pg.js";
+import { checkout, pgErrorCode, type PgClient, type PgPool } from "./pg.js";
 import {
   DEFAULT_SCHEMA,
   SwitchyardPostgresConfigError,
@@ -155,11 +155,11 @@ async function withMigrationClient<T>(
   operation: (client: PgClient) => Promise<T>
 ): Promise<T> {
   if (options.pool !== undefined) {
-    const client = await options.pool.connect();
+    const lease = await checkout(options.pool);
     try {
-      return await operation(client);
+      return await operation(lease.client);
     } finally {
-      client.release();
+      lease.release();
     }
   }
   const connectionString = options.connectionString;
@@ -171,12 +171,13 @@ async function withMigrationClient<T>(
     max: 1,
     application_name: "switchyard-postgres-migrate"
   });
+  pool.on("error", () => undefined);
   try {
-    const client = await pool.connect();
+    const lease = await checkout(pool);
     try {
-      return await operation(client);
+      return await operation(lease.client);
     } finally {
-      client.release();
+      lease.release();
     }
   } finally {
     await pool.end();
