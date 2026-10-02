@@ -1,3 +1,13 @@
+// scshafe-dev release script. Master copy: scshafe/scshafe-dev
+// release/scripts/check-release-artifact.mjs, copied verbatim into each
+// library by `dev new` (D-5). Do not edit it in a library.
+//
+// LIB-03 / LIB-12a: pack twice and require identical bytes; require the
+// packed paths and their sha256 to equal the committed payload manifest
+// (release/<scope>-<name>-<version>.payload.sha256); reject non-regular
+// entries, unsafe paths, NUL bytes, local paths, package-manager protocols
+// and token-shaped strings in any packed file.
+
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -18,7 +28,7 @@ import {
 
 const identity = await readReleaseIdentity(root);
 const manifestPath = resolve(root, identity.manifest);
-const scratch = await mkdtemp(join(tmpdir(), "switchyard-postgres-release-"));
+const scratch = await mkdtemp(join(tmpdir(), `${identity.base}-release-`));
 
 async function run(command, args, options = {}) {
   const child = spawn(command, args, {
@@ -80,6 +90,9 @@ async function pack(destination) {
   );
   if (report.name !== identity.name || report.version !== identity.version) {
     throw new Error("packed identity does not match package.json");
+  }
+  if (report.basename !== `${identity.base}-${identity.version}.tgz`) {
+    throw new Error(`unexpected tarball name ${report.basename}`);
   }
   return {
     report,

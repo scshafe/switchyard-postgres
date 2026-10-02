@@ -40,6 +40,15 @@ before meaningful changes.
 - `@scshafe/switchyard` comes from GitHub Packages (dev dependency pinned
   exactly, peer `^2.2.0`). Never vendor it or add a pnpm override:
   `publish.yml` refuses to release while either exists.
+- The release kit (`scripts/check-*.mjs`, `clean.mjs`, `release-identity.mjs`,
+  `smoke-peers.mjs`, `write-release-manifest.mjs`, `ci.yml`, `publish.yml`) is
+  scshafe-dev's master, verbatim. `pin-migrations.mjs` and `test-postgres.mjs`
+  are this repository's own. Repository inputs live in
+  `scripts/release.config.mjs`; the packed-install smokes are `test/smoke/`.
+  One known local difference: `ci.yml` and `publish.yml` add the Postgres
+  service the tests need (drift lessons CI15, PB27). Do not edit the kit
+  here; change `release.config.mjs`, or change the master and re-sync
+  (`dev check --diff`).
 
 ## Verification
 

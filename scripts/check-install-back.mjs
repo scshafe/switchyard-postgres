@@ -1,11 +1,14 @@
+// scshafe-dev release script. Master copy: scshafe/scshafe-dev
+// release/scripts/check-install-back.mjs, copied verbatim into each library
+// by `dev new` (D-5). Do not edit it in a library.
+//
 // Install-back check for the publish workflow: given a consumer directory in
-// which `pnpm add --save-exact @scshafe/switchyard@<pinned>
-// @scshafe/switchyard-postgres@<version>` has run (only this package's
-// integrity is compared; the engine is not this repository's release),
+// which `pnpm add --save-exact <peers...> <this package>@<version>` has run,
 // read the integrity pnpm recorded (and verified against the downloaded bytes)
 // from the consumer's pnpm-lock.yaml and require it to equal every expected
 // integrity passed on the command line (the local pack of the tag, the
-// publish job's pack). Prints one JSON line on success.
+// publish job's pack). Only this package is compared; the peers are other
+// projects' releases. Prints one JSON line on success.
 //
 // usage: node scripts/check-install-back.mjs <consumerDir> <sha512-...> [<sha512-...> ...]
 
@@ -58,7 +61,8 @@ if (resolved === undefined) {
   throw new Error(`${name} is not a dependency of the consumer's root importer`);
 }
 // pnpm appends the resolved peers to the importer's version, e.g.
-// `0.5.1(elkjs@0.10.2)`; the `packages:` key carries the bare version.
+// `0.5.1(elkjs@0.10.2)`; the `packages:` key carries the bare version
+// (graphpaper 0.5.1's install-back failed on this).
 const bare = resolved.replace(/\(.*\)$/, "");
 if (bare !== version) {
   throw new Error(`consumer resolved ${name}@${resolved}, expected exactly ${version}`);
