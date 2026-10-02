@@ -8,6 +8,10 @@ class = "managed"
 [app]
 kind = "library"
 
+# BASE-06: the one command that verifies this repository; CI runs it.
+[verify]
+command = "pnpm run verify"
+
 [skills]
 # LIB-02 asks for .agents/skills; the catalog is M4. Recorded gap.
 selected = []
