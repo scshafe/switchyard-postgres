@@ -1,28 +1,48 @@
-// Pack the package, install it into an empty consumer next to its peer
-// @scshafe/switchyard, and run JS and TypeScript smokes against the install
-// (not the source tree): exports, shipped SQL with pinned checksums, the CLI
-// bin, and that the stores satisfy switchyard's store interfaces.
+// scshafe-dev release script. Master copy: scshafe/scshafe-dev
+// release/scripts/check-pack-install.mjs, copied verbatim into each library
+// by `dev new` (D-5). Do not edit it in a library: the package's own smokes
+// live in test/smoke/, the peer phases in scripts/release.config.mjs.
 //
-// With SWITCHYARD_POSTGRES_SMOKE_CONSUMER set to a directory that already has
-// the package installed (the publish workflow's install-back of the registry
-// version), skip pack+install and run the same smokes there. Either way the
-// consumer must depend directly on the engine at the version pinned in
-// devDependencies, as a user installs it: a peer that pnpm only auto-installs
-// is not importable from the consumer (0.1.0's release job).
+// Pack the package, install the tarball into an empty consumer next to its
+// peers at the exact versions this tree is verified against, and run smokes
+// against the install, not the source tree:
+//
+//   - identity: the installed package.json has this name and version, and the
+//     unscoped name (an unrelated npmjs.org package, perhaps) does not resolve;
+//   - peers: every base-phase peer is a direct, exact dependency of the
+//     consumer and resolves from it; no optional-phase peer is installed or
+//     resolvable (pnpm 10 auto-installs optional peers unless told not to);
+//   - JS: each test/smoke/*.smoke.mjs runs in the consumer (with this Node);
+//   - TypeScript: test/smoke/*.smoke.ts typecheck against the shipped .d.ts.
+//
+// then, for each optional-peer phase in release.config.mjs, add that phase's
+// peers and run test/smoke/<phase>/ the same way.
+//
+// With RELEASE_SMOKE_CONSUMER set to a directory that already has the package
+// and its peers installed (the publish workflow's install-back of the registry
+// version), skip pack+install and run one phase there, named by
+// RELEASE_SMOKE_PHASE ("base" or a phase name).
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { PNPM_PACK_ARGS, singlePackReport } from "./release-identity.mjs";
+import {
+  PNPM_PACK_ARGS,
+  phaseNames,
+  projectRoot as root,
+  readReleaseConfig,
+  readReleaseIdentity,
+  singlePackReport,
+  smokePeerSpecs,
+  unscopedName
+} from "./release-identity.mjs";
 
-const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
-const installedConsumer = process.env.SWITCHYARD_POSTGRES_SMOKE_CONSUMER;
-const scratch = installedConsumer
-  ? undefined
-  : await mkdtemp(join(tmpdir(), "switchyard-postgres-pack-"));
+const identity = await readReleaseIdentity(root);
+const config = await readReleaseConfig(root);
+const installedConsumer = process.env.RELEASE_SMOKE_CONSUMER;
+const scratch = installedConsumer ? undefined : await mkdtemp(join(tmpdir(), `${identity.base}-pack-`));
 
 async function run(command, args, options = {}) {
   const child = spawn(command, args, {
@@ -40,23 +60,13 @@ async function run(command, args, options = {}) {
   return stdout;
 }
 
-/**
- * The peer to install beside the package: the vendored engine tarball while
- * pnpm-workspace.yaml still overrides it, otherwise the exact registry
- * version from devDependencies (auth comes from the user's npmrc / CI).
- */
-async function peerSpec(packageJson) {
-  const workspace = await readFile(resolve(root, "pnpm-workspace.yaml"), "utf8");
-  const vendored = /@scshafe\/switchyard"?\s*:\s*file:(vendor\/[^\s]+\.tgz)/.exec(workspace)?.[1];
-  if (vendored !== undefined) return { spec: resolve(root, vendored) };
-  const version = packageJson.devDependencies?.["@scshafe/switchyard"];
-  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
-    throw new Error("devDependencies @scshafe/switchyard must be an exact version");
-  }
-  return { spec: `@scshafe/switchyard@${version}` };
+async function pnpmStoreDir() {
+  // The scratch consumer may sit on another filesystem (tmpdir), where pnpm
+  // would pick a different, empty store; reuse the project's store.
+  return (await run("pnpm", ["store", "path"], { capture: true })).trim();
 }
 
-async function packAndInstall(packageJson) {
+async function packAndInstall(peers) {
   const packed = singlePackReport(await run("pnpm", [
     ...PNPM_PACK_ARGS,
     "--pack-destination",
@@ -69,143 +79,176 @@ async function packAndInstall(packageJson) {
     join(consumer, "package.json"),
     `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`
   );
+  // The scope line only: @scshafe peers come from GitHub Packages with the
+  // user's (or the job's) read token, never from registry.npmjs.org.
   await copyFile(resolve(root, ".npmrc"), join(consumer, ".npmrc"));
-  const peer = await peerSpec(packageJson);
-  // The scratch consumer may sit on another filesystem (tmpdir), where pnpm
-  // would pick a different, empty store; reuse the project's store.
-  const storeDir = (await run("pnpm", ["store", "path"], { capture: true })).trim();
   await run("pnpm", [
     "add",
+    // pnpm 10 auto-installs optional peers too (auto-install-peers=true); the
+    // base consumer gets exactly the peers listed here (scshafe-ui 0.3.0).
+    "--config.auto-install-peers=false",
     "--ignore-scripts",
     "--prefer-offline",
     "--store-dir",
-    storeDir,
+    await pnpmStoreDir(),
     "--save-exact",
     join(scratch, packed.basename),
-    peer.spec
+    ...peers.map((peer) => peer.spec)
   ], { cwd: consumer });
   return consumer;
 }
 
-/** The consumer lists the engine itself, at the version this tree pins. */
-async function assertDirectEngineDependency(consumer, packageJson) {
-  const consumerJson = JSON.parse(await readFile(join(consumer, "package.json"), "utf8"));
-  const declared = consumerJson.dependencies?.["@scshafe/switchyard"];
-  const { spec } = await peerSpec(packageJson);
-  const expected = spec.startsWith("@scshafe/switchyard@") ? spec.slice("@scshafe/switchyard@".length) : undefined;
-  if (declared === undefined || (expected !== undefined && declared !== expected)) {
+async function addPeers(consumer, peers) {
+  await run("pnpm", [
+    "add", "--config.auto-install-peers=false", "--ignore-scripts", "--prefer-offline",
+    "--store-dir", await pnpmStoreDir(), "--save-exact",
+    ...peers.map((peer) => peer.spec)
+  ], { cwd: consumer });
+}
+
+async function consumerJson(consumer) {
+  return JSON.parse(await readFile(join(consumer, "package.json"), "utf8"));
+}
+
+async function probe(consumer, fileName, source) {
+  await writeFile(join(consumer, fileName), source);
+  await run(process.execPath, [fileName], { cwd: consumer });
+}
+
+// A peer "resolves" from the consumer if its root or its package.json is
+// importable, or, for a package that exports only subpaths and no
+// ./package.json (@tiptap/pm, scshafe-ui's editor phase), if its directory is
+// linked into the consumer's node_modules. Shared by both probes below.
+const PEER_PRESENT = `
+  import { existsSync } from "node:fs";
+  const present = (name) => {
+    for (const specifier of [name, name + "/package.json"]) {
+      try { import.meta.resolve(specifier); return true; } catch {}
+    }
+    return existsSync(new URL("./node_modules/" + name + "/package.json", import.meta.url));
+  };
+`;
+
+// Every peer of this phase is a direct, exact dependency of the consumer and
+// resolves from it: a peer pnpm only auto-installs is not importable from the
+// consumer itself (switchyard-postgres 0.1.0's release job).
+async function assertDirectPeers(consumer, peers) {
+  const json = await consumerJson(consumer);
+  const wrong = peers.filter((peer) => json.dependencies?.[peer.name] !== peer.version);
+  if (wrong.length > 0) {
     throw new Error(
-      `consumer ${consumer} must depend directly on @scshafe/switchyard${expected === undefined ? "" : `@${expected}`}` +
-      ` (found ${declared === undefined ? "no dependency" : JSON.stringify(declared)}); install it next to` +
-      " @scshafe/switchyard-postgres as the README does, not only as an auto-installed peer"
+      `consumer ${consumer} must depend directly on ${wrong.map((peer) => peer.spec).join(", ")}` +
+      ` (found ${JSON.stringify(json.dependencies ?? {})}); install the peers next to ${identity.name}`
     );
   }
+  if (peers.length === 0) return;
+  await probe(consumer, "peers-probe.mjs", `${PEER_PRESENT}
+    const missing = ${JSON.stringify(peers.map((peer) => peer.name))}.filter((name) => !present(name));
+    if (missing.length > 0) throw new Error("peers not resolvable from the consumer: " + missing.join(", "));
+  `);
+}
+
+// Peers of optional phases not yet added must be absent: neither dependencies
+// of, nor resolvable from, the consumer.
+async function assertAbsentPeers(consumer, peers) {
+  if (peers.length === 0) return;
+  const json = await consumerJson(consumer);
+  const present = peers.filter((peer) => json.dependencies?.[peer.name] !== undefined);
+  if (present.length > 0) throw new Error(`consumer must not depend on ${present.map((peer) => peer.name).join(", ")} yet`);
+  await probe(consumer, "absent-probe.mjs", `${PEER_PRESENT}
+    const found = ${JSON.stringify(peers.map((peer) => peer.name))}.filter(present);
+    if (found.length > 0) throw new Error("optional peers resolvable before their phase: " + found.join(", "));
+  `);
+}
+
+async function assertIdentity(consumer) {
+  await probe(consumer, "identity-probe.mjs", `
+    import { readFileSync } from "node:fs";
+    import { fileURLToPath } from "node:url";
+    const metadata = JSON.parse(readFileSync(fileURLToPath(import.meta.resolve(${JSON.stringify(`${identity.name}/package.json`)})), "utf8"));
+    if (metadata.name !== ${JSON.stringify(identity.name)} || metadata.version !== ${JSON.stringify(identity.version)}) {
+      throw new Error("installed identity " + metadata.name + "@" + metadata.version + " is not ${identity.name}@${identity.version}");
+    }
+    // The unscoped name is not this package (it may be an unrelated public
+    // package on registry.npmjs.org) and must not resolve here.
+    let resolved = true;
+    try { import.meta.resolve(${JSON.stringify(unscopedName(identity.name))}); } catch { resolved = false; }
+    if (resolved) throw new Error("the unscoped name ${unscopedName(identity.name)} resolves in the consumer");
+  `);
+}
+
+async function smokeFiles(directory) {
+  const entries = await readdir(resolve(root, directory), { withFileTypes: true }).catch(() => []);
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+  return {
+    js: files.filter((file) => file.endsWith(".smoke.mjs")),
+    ts: files.filter((file) => file.endsWith(".smoke.ts"))
+  };
+}
+
+async function runSmokes(consumer, phase) {
+  const directory = phase === "base" ? "test/smoke" : `test/smoke/${phase}`;
+  const { js, ts } = await smokeFiles(directory);
+  if (phase === "base" && js.length === 0) {
+    throw new Error("test/smoke has no *.smoke.mjs: the packed package is never imported");
+  }
+  const target = join(consumer, phase === "base" ? "smoke" : `smoke-${phase}`);
+  await mkdir(target, { recursive: true });
+  for (const file of [...js, ...ts]) await copyFile(resolve(root, directory, file), join(target, file));
+  for (const file of js) {
+    await run(process.execPath, [join(target, file)], { cwd: consumer });
+  }
+  if (ts.length > 0) {
+    const tsconfig = join(consumer, `tsconfig.${phase}.json`);
+    await writeFile(tsconfig, `${JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2022",
+        lib: config.typeSmokeLib,
+        strict: true,
+        noEmit: true,
+        skipLibCheck: config.typeSmokeSkipLibCheck,
+        types: []
+      },
+      files: ts.map((file) => join(target, file))
+    }, null, 2)}\n`);
+    await run(process.execPath, [
+      resolve(root, "node_modules/typescript/bin/tsc"),
+      "--project",
+      tsconfig
+    ], { cwd: consumer });
+  }
+  console.log(`${identity.name} ${phase} smokes passed (${js.length} JS, ${ts.length} TypeScript).`);
 }
 
 try {
-  const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
-  const consumer = installedConsumer === undefined
-    ? await packAndInstall(packageJson)
-    : resolve(installedConsumer);
-  await assertDirectEngineDependency(consumer, packageJson);
-
-  const installedSql = (await readdir(join(consumer, "node_modules/@scshafe/switchyard-postgres/sql"))).sort();
-  const smoke = `
-    import * as api from "@scshafe/switchyard-postgres";
-    import metadata from "@scshafe/switchyard-postgres/package.json" with { type: "json" };
-    import { MemoryGraphStore } from "@scshafe/switchyard/store/memory-graph-store";
-
-    const loaded = await api.loadMigrations();
-    if (loaded.length !== api.MIGRATIONS.length || api.LATEST_MIGRATION_VERSION !== loaded.at(-1).version) {
-      throw new Error("shipped migrations do not match the manifest");
-    }
-    if (JSON.stringify(loaded.map((m) => m.fileName)) !== ${JSON.stringify(JSON.stringify(installedSql))}) {
-      throw new Error("sql/ payload does not match the manifest");
-    }
-    for (const name of [
-      "migrate", "migrationStatus", "assertSchemaCurrent", "createPostgresStores",
-      "PostgresGraphStore", "PostgresUnitStore", "PostgresHumanDecisions", "loadGraphOnClient"
-    ]) {
-      if (typeof api[name] !== "function") throw new Error("missing export " + name);
-    }
-    const pool = { connect: async () => { throw new Error("no database in the smoke"); } };
-    const stores = api.createPostgresStores({ pool, schema: "smoke_schema" });
-    if (stores.unitStore.schema !== "smoke_schema" || stores.humanDecisions.schema !== "smoke_schema") {
-      throw new Error("schema option not applied");
-    }
-    let refused = false;
-    try { new api.PostgresUnitStore({ pool, schema: "Bad Name" }); } catch (error) {
-      refused = error instanceof api.SwitchyardPostgresConfigError;
-    }
-    if (!refused) throw new Error("invalid schema name accepted");
-    if (typeof MemoryGraphStore !== "function") throw new Error("peer @scshafe/switchyard not resolvable");
-    if (metadata.version !== ${JSON.stringify(packageJson.version)}) {
-      throw new Error("package version mismatch");
-    }
-  `;
-  await writeFile(join(consumer, "smoke.mjs"), smoke);
-  await run("node", ["smoke.mjs"], { cwd: consumer });
-
-  const help = await run(join(consumer, "node_modules/.bin/switchyard-postgres"), ["--help"], {
-    cwd: consumer,
-    capture: true
-  });
-  if (!help.includes("usage: switchyard-postgres <migrate|status>")) {
-    throw new Error("switchyard-postgres bin did not print its usage");
+  const phases = phaseNames(config);
+  const base = smokePeerSpecs(identity.packageJson, config, "base");
+  const optional = Object.fromEntries(phases.map((phase) => [phase, smokePeerSpecs(identity.packageJson, config, phase)]));
+  const requested = installedConsumer === undefined ? undefined : process.env.RELEASE_SMOKE_PHASE;
+  if (installedConsumer !== undefined && !["base", ...phases].includes(requested)) {
+    throw new Error(`with RELEASE_SMOKE_CONSUMER, set RELEASE_SMOKE_PHASE to one of ${["base", ...phases].join(", ")}`);
   }
-
-  const typeSmoke = `
-    import {
-      createPostgresStores,
-      migrate,
-      PostgresGraphStore,
-      PostgresHumanDecisions,
-      PostgresUnitStore,
-      type MigrateResult,
-      type PendingHumanTurn,
-      type PgPool
-    } from "@scshafe/switchyard-postgres";
-    import type { GraphStore } from "@scshafe/switchyard/store/graph-store";
-    import type { UnitStore } from "@scshafe/switchyard/store/unit-store";
-    import type { ExternalTurnRunnerStore } from "@scshafe/switchyard/execute/unit-runner";
-
-    declare const pool: PgPool;
-    const stores = createPostgresStores({ pool, now: () => new Date() });
-    const graphStore: GraphStore = stores.graphStore;
-    const unitStore: UnitStore = stores.unitStore;
-    const external: ExternalTurnRunnerStore = new PostgresUnitStore({ pool });
-    const decisions: PostgresHumanDecisions = stores.humanDecisions;
-    const direct: GraphStore = new PostgresGraphStore({ pool, schema: "custom" });
-    const result: Promise<MigrateResult> = migrate({ pool, roles: false });
-    const pending: Promise<readonly PendingHumanTurn[]> = decisions.listPending({ limit: 10 });
-    // @ts-expect-error a pool is required
-    new PostgresUnitStore({ schema: "switchyard" });
-    // @ts-expect-error decisions need an outcome and an actor
-    void decisions.record({ queueId: "q" });
-    void graphStore; void unitStore; void external; void direct; void result; void pending;
-  `;
-  await writeFile(join(consumer, "smoke.ts"), typeSmoke);
-  await writeFile(join(consumer, "tsconfig.json"), `${JSON.stringify({
-    compilerOptions: {
-      module: "NodeNext",
-      moduleResolution: "NodeNext",
-      target: "ES2022",
-      strict: true,
-      noEmit: true,
-      skipLibCheck: false,
-      types: []
-    },
-    files: ["smoke.ts"]
-  }, null, 2)}\n`);
-  await run(process.execPath, [
-    resolve(root, "node_modules/typescript/bin/tsc"),
-    "--project",
-    "tsconfig.json"
-  ], { cwd: consumer });
+  const consumer = installedConsumer === undefined ? await packAndInstall(base) : resolve(installedConsumer);
+  const run_phases = requested === undefined ? ["base", ...phases] : [requested];
+  const added = [];
+  for (const phase of run_phases) {
+    if (phase === "base") {
+      await assertIdentity(consumer);
+      await assertDirectPeers(consumer, base);
+      await assertAbsentPeers(consumer, Object.values(optional).flat());
+    } else {
+      if (installedConsumer === undefined) await addPeers(consumer, optional[phase]);
+      added.push(...optional[phase]);
+      await assertDirectPeers(consumer, [...base, ...added]);
+    }
+    await runSmokes(consumer, phase);
+  }
   console.log(
     installedConsumer === undefined
-      ? "switchyard-postgres packed-install runtime + CLI + TypeScript smoke passed."
-      : `switchyard-postgres installed-consumer runtime + CLI + TypeScript smoke passed (${consumer}).`
+      ? `${identity.name} packed-install smokes passed (${run_phases.join(", ")}).`
+      : `${identity.name} installed-consumer ${requested} smokes passed (${consumer}).`
   );
 } finally {
   if (scratch !== undefined) await rm(scratch, { force: true, recursive: true });

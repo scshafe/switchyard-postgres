@@ -1,11 +1,24 @@
+// scshafe-dev release script. Master copy: scshafe/scshafe-dev
+// release/scripts/check-package-payload.mjs, copied verbatim into each
+// library by `dev new` (D-5). Do not edit it in a library: the payload rules
+// live in scripts/release.config.mjs (`payload`).
+//
+// The payload is exactly package.json's `files` whitelist, file by file: each
+// listed file, and every file under each listed directory (which must have a
+// rule in release.config.mjs `payload` saying what it may contain), plus
+// package.json. No symlinks, no special files, no NUL bytes.
+
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { PNPM_PACK_ARGS, singlePackReport } from "./release-identity.mjs";
-
-const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
+import {
+  PNPM_PACK_ARGS,
+  projectRoot as root,
+  readReleaseConfig,
+  readReleaseIdentity,
+  singlePackReport
+} from "./release-identity.mjs";
 
 async function run(command, args) {
   const child = spawn(command, args, {
@@ -24,12 +37,6 @@ async function run(command, args) {
   }
   return stdout;
 }
-
-const rootRules = new Map([
-  ["src", (path) => path.endsWith(".ts")],
-  ["lib", (path) => path.endsWith(".js") || path.endsWith(".d.ts")],
-  ["sql", (path) => /^sql\/\d{3}_[a-z0-9_]+\.sql$/.test(path)]
-]);
 
 async function expectedFilesIn(directory, accepts) {
   const absolute = resolve(root, directory);
@@ -68,29 +75,43 @@ async function expectedFilesIn(directory, accepts) {
   return files;
 }
 
-const expected = new Set([
-  "CHANGELOG.md",
-  "LICENSE",
-  "README.md",
-  "package.json",
-  "tsconfig.json"
-]);
-for (const [directory, accepts] of rootRules) {
-  for (const path of await expectedFilesIn(directory, accepts)) {
-    expected.add(path);
+const { name, version, packageJson } = await readReleaseIdentity(root);
+const config = await readReleaseConfig(root);
+if (!Array.isArray(packageJson.files) || packageJson.files.length === 0) {
+  throw new Error("package.json must have a `files` whitelist (LIB-02)");
+}
+if (!packageJson.files.includes("CHANGELOG.md")) {
+  throw new Error("package.json `files` must include CHANGELOG.md (LIB-02)");
+}
+
+const expected = new Set(["package.json"]);
+for (const entry of packageJson.files) {
+  if (typeof entry !== "string" || /[*?[\]{}!]/.test(entry) || entry.startsWith("/") || entry.split("/").includes("..")) {
+    throw new Error(`package.json files entry must be a plain relative path, not ${JSON.stringify(entry)}`);
+  }
+  const stat = await lstat(resolve(root, entry)).catch(() => undefined);
+  if (stat === undefined) throw new Error(`package.json files entry ${entry} does not exist (build first?)`);
+  if (stat.isSymbolicLink()) throw new Error(`package.json files entry ${entry} is a symbolic link`);
+  if (stat.isDirectory()) {
+    const rule = config.payload[entry];
+    if (typeof rule !== "string") {
+      throw new Error(`release.config.mjs payload has no rule for the files directory ${entry}`);
+    }
+    const pattern = new RegExp(rule);
+    for (const path of await expectedFilesIn(entry, (path) => pattern.test(path))) {
+      expected.add(path);
+    }
+  } else if (stat.isFile()) {
+    expected.add(entry);
+  } else {
+    throw new Error(`package.json files entry ${entry} is not a regular file or directory`);
   }
 }
 
 const report = singlePackReport(
   await run("pnpm", [...PNPM_PACK_ARGS, "--dry-run"])
 );
-const packageJson = JSON.parse(
-  await readFile(resolve(root, "package.json"), "utf8")
-);
-if (
-  report.name !== packageJson.name
-  || report.version !== packageJson.version
-) {
+if (report.name !== name || report.version !== version) {
   throw new Error("pnpm pack identity does not match package.json");
 }
 
@@ -104,5 +125,5 @@ if (missing.length > 0 || unexpected.length > 0) {
 }
 
 console.log(
-  `switchyard-postgres package payload passed (${actual.size} exact files).`
+  `${name} package payload passed (${actual.size} exact files).`
 );
