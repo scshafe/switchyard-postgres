@@ -36,3 +36,5 @@ params = { kind = "library", name = "switchyard-postgres", description = "Postgr
 agent = "agent-switchyard-postgres"
 github = ["contents=write", "pull_requests=write", "issues=write", "workflows=write", "actions=write"]
 packages = "read"  # IDENT-02: package.json depends on @scshafe/switchyard
+# Rootless Docker for agent-switchyard-postgres ([verify] runs containers); `sudo scshafe-agent-setup docker <project>`.
+docker = true
