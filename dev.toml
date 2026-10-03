@@ -23,9 +23,9 @@ selected = []
 # repository's files, and the files that differ from it were left as they are.
 [template]
 source = "scshafe/scshafe-dev"
-version = "0.1.0"
-commit = "b03c914b1d950a153dffb7ef5bf8976cd887d60c"
-released = false
+version = "0.2.0"
+commit = "8a4096c73134fe912e2c1f4355a9fe1ea122e70f"
+released = true
 dirty = false
 mode = "adopted"
 params = { kind = "library", name = "switchyard-postgres", description = "PostgreSQL graph store, unit store and human-decision recording for @scshafe/switchyard.", peers = ["@scshafe/switchyard@2.2.0"], deps = ["pg@^8.23.0"], date = "2026-09-30" }
