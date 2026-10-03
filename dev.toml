@@ -29,3 +29,10 @@ released = true
 dirty = false
 mode = "adopted"
 params = { kind = "library", name = "switchyard-postgres", description = "PostgreSQL graph store, unit store and human-decision recording for @scshafe/switchyard.", peers = ["@scshafe/switchyard@2.2.0"], deps = ["pg@^8.23.0"], date = "2026-09-30" }
+
+# IDENT-01: what this project's agent may do (scshafe/infra docs/platform/agent-identity.md).
+# References, never secrets. `dev identity plan` compares it with the host and GitHub.
+[identity]
+agent = "agent-switchyard-postgres"
+github = ["contents=write", "pull_requests=write", "issues=write", "workflows=write", "actions=write"]
+packages = "read"  # IDENT-02: package.json depends on @scshafe/switchyard
