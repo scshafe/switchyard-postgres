@@ -23,8 +23,8 @@ selected = []
 # repository's files, and the files that differ from it were left as they are.
 [template]
 source = "scshafe/scshafe-dev"
-version = "0.2.0"
-commit = "8a4096c73134fe912e2c1f4355a9fe1ea122e70f"
+version = "0.6.0"
+commit = "d2836d8e7efac8cc24b6662e58b0f56df6e2c461"
 released = true
 dirty = false
 mode = "adopted"
