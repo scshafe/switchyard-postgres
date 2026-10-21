@@ -17,7 +17,7 @@ one versioned schema you can inspect with plain SQL.
   else. A separate reader role can `SELECT` every table and view, including per-unit
   status, position and output views.
 
-Requires Node 22.22+ or 24.18+, PostgreSQL (tested on 18), and
+Requires Node 22.23.4+ or 24.22.1+, PostgreSQL (tested on 18), and
 `@scshafe/switchyard` `^2.2.0` as a peer dependency.
 
 ## Install
