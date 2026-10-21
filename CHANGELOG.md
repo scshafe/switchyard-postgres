@@ -5,6 +5,17 @@ Versions follow [SemVer](https://semver.org/). A release is the annotated tag
 `v<x.y.z>` on a commit on `main` whose `package.json` version is `<x.y.z>`;
 published versions are never deleted, replaced or reused.
 
+## 0.2.1 — 2026-10-21
+
+Security floor for the Node.js 2026-10-21 security releases (CVE-2026-111497
+Brotli decoder, CVE-2026-105483 / CVE-2026-106069 TLS hostname checks,
+CVE-2026-105482 `dns.resolve`, plus OpenSSL, undici and c-ares updates). No
+API, migration or schema change.
+
+- `engines.node` is `>=22.23.4 <23 || >=24.22.1 <25`, the patched releases of
+  both lines (was `>=22.22.0 <23 || >=24.18.0 <25`); CI tests those endpoints
+  and `.node-version` is 24.22.1.
+
 ## 0.2.0 — 2026-09-30
 
 Found by a first-run guide author and a fresh-eyes tester on switchyard
